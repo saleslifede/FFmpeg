@@ -105,4 +105,4 @@ app.post('/render', async (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log('Render service listening on port', port);
-});\n
+});
