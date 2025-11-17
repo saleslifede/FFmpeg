@@ -10,70 +10,12 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Pfad zur Config
-const configPath = path.join(__dirname, 'config.json');
-
-function loadConfig() {
-  const raw = fs.readFileSync(configPath, 'utf8');
-  return JSON.parse(raw);
-}
-
-function saveConfig(cfg) {
-  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
-}
-
-// Simple Admin-Auth über Token
-function checkAdmin(req, res, next) {
-  const pass = process.env.ADMIN_PASSWORD;
-  const token = req.query.token || req.body.token;
-
-  if (!pass) return res.status(500).send('ADMIN_PASSWORD not set');
-  if (token !== pass) return res.status(403).send('Forbidden');
-
-  next();
-}
-
 // Healthcheck
 app.get('/', (req, res) => {
-  res.send('FFmpeg render service up');
+  res.send('FFmpeg render service up (minimal)');
 });
 
-// Admin UI (aktuell vor allem für Resolution, Rest optional)
-app.get('/admin', checkAdmin, (req, res) => {
-  const cfg = loadConfig();
-  const token = req.query.token || '';
-  const html = `
-  <html>
-    <body style="font-family: sans-serif; max-width: 600px; margin: 40px auto;">
-      <h1>Video Render Settings</h1>
-      <form method="POST" action="/admin/save?token=${token}">
-        <label>Resolution (z.B. 1080x1920)</label><br/>
-        <input name="resolution" value="${cfg.resolution}" style="width:100%"/><br/><br/>
-        <button type="submit">Speichern</button>
-      </form>
-    </body>
-  </html>
-  `;
-  res.send(html);
-});
-
-app.post('/admin/save', checkAdmin, (req, res) => {
-  const newCfg = {
-    resolution: req.body.resolution || '1080x1920',
-    // alte Felder lassen wir vorerst drin, aber nutzen sie nicht
-    fontSize: 48,
-    fontColor: 'white',
-    textYOffset: 150,
-    defaultTemplate: '🚀 Starte heute. Link in Bio.'
-  };
-
-  saveConfig(newCfg);
-
-  const token = req.query.token || req.body.token || '';
-  res.redirect('/admin?token=' + token);
-});
-
-// Render-Endpoint für n8n
+// Render-Endpoint: nur Video zuschneiden auf 1080x1920 (Reels)
 app.post('/render', async (req, res) => {
   const { videoUrl } = req.body;
 
@@ -81,8 +23,8 @@ app.post('/render', async (req, res) => {
     return res.status(400).json({ error: 'videoUrl ist Pflicht.' });
   }
 
-  const cfg = loadConfig();
-  const [w, h] = (cfg.resolution || '1080x1920').split('x');
+  const width = 1080;
+  const height = 1920;
 
   const id = uuid();
   const inputPath = path.join('/tmp', `${id}-in.mp4`);
@@ -95,8 +37,8 @@ app.post('/render', async (req, res) => {
 
     // 2) ffmpeg-Command OHNE drawtext (nur scale + pad)
     const vfFilters =
-      `scale=${w}:${h}:force_original_aspect_ratio=decrease,` +
-      `pad=${w}:${h}:( ${w}-iw)/2:(${h}-ih)/2:black`;
+      `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+      `pad=${width}:${height}:( ${width}-iw)/2:(${height}-ih)/2:black`;
 
     const cmd = `${ffmpegPath} -y -i "${inputPath}" ` +
       `-vf "${vfFilters}" ` +
@@ -134,7 +76,10 @@ app.post('/render', async (req, res) => {
     });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ error: 'download or render error', details: e.message });
+    return res.status(500).json({
+      error: 'download or render error',
+      details: e.message
+    });
   }
 });
 
