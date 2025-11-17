@@ -7,15 +7,15 @@ const { exec } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Healthcheck
 app.get('/', (req, res) => {
-  res.send('FFmpeg render service up (minimal)');
+  res.send('FFmpeg render service up (streaming)');
 });
 
-// Render-Endpoint: nur Video zuschneiden auf 1080x1920 (Reels)
+// Render-Endpoint: Video -> 1080x1920 (Reels), Streaming-Output
 app.post('/render', async (req, res) => {
   const { videoUrl } = req.body;
 
@@ -31,9 +31,21 @@ app.post('/render', async (req, res) => {
   const outputPath = path.join('/tmp', `${id}-out.mp4`);
 
   try {
-    // 1) Video herunterladen
-    const response = await axios.get(videoUrl, { responseType: 'arraybuffer' });
-    fs.writeFileSync(inputPath, response.data);
+    // 1) Video per Stream herunterladen (kein voller Buffer im RAM)
+    const response = await axios({
+      method: 'GET',
+      url: videoUrl,
+      responseType: 'stream',
+    });
+
+    const writeStream = fs.createWriteStream(inputPath);
+
+    await new Promise((resolve, reject) => {
+      response.data.pipe(writeStream);
+      response.data.on('error', reject);
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+    });
 
     // 2) ffmpeg-Command OHNE drawtext (nur scale + pad)
     const vfFilters =
@@ -51,31 +63,38 @@ app.post('/render', async (req, res) => {
       console.error('FFmpeg stderr:', stderr);
 
       if (error) {
+        try { fs.existsSync(inputPath) && fs.unlinkSync(inputPath); } catch {}
+        try { fs.existsSync(outputPath) && fs.unlinkSync(outputPath); } catch {}
+
         return res.status(500).json({
           error: 'ffmpeg failed',
           details: stderr.toString()
         });
       }
 
-      try {
-        const buffer = fs.readFileSync(outputPath);
-        const base64 = buffer.toString('base64');
+      // 3) Ergebnis als Stream zurückgeben (kein Base64)
+      res.setHeader('Content-Type', 'video/mp4');
 
-        fs.unlinkSync(inputPath);
-        fs.unlinkSync(outputPath);
+      const readStream = fs.createReadStream(outputPath);
 
-        return res.json({
-          status: 'done',
-          fileBase64: base64,
-          mimeType: 'video/mp4'
-        });
-      } catch (e) {
-        console.error(e);
-        return res.status(500).json({ error: 'read output failed' });
-      }
+      readStream.on('error', (err) => {
+        console.error('ReadStream error:', err);
+        try { fs.existsSync(inputPath) && fs.unlinkSync(inputPath); } catch {}
+        try { fs.existsSync(outputPath) && fs.unlinkSync(outputPath); } catch {}
+        res.status(500).end('read output failed');
+      });
+
+      res.on('close', () => {
+        try { fs.existsSync(inputPath) && fs.unlinkSync(inputPath); } catch {}
+        try { fs.existsSync(outputPath) && fs.unlinkSync(outputPath); } catch {}
+      });
+
+      readStream.pipe(res);
     });
   } catch (e) {
     console.error(e);
+    try { fs.existsSync(inputPath) && fs.unlinkSync(inputPath); } catch {}
+    try { fs.existsSync(outputPath) && fs.unlinkSync(outputPath); } catch {}
     return res.status(500).json({
       error: 'download or render error',
       details: e.message
@@ -86,4 +105,4 @@ app.post('/render', async (req, res) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log('Render service listening on port', port);
-});
+});\n
