@@ -16,12 +16,11 @@ const app = express();
 const UPLOAD_DIR = "/tmp/uploads";
 const RENDER_DIR = "/tmp/renders";
 
-const FONT_DIR = path.join(__dirname, "fonts");
-const MONTSERRAT_PATH = path.join(FONT_DIR, "Montserrat-Regular.ttf");
-const DEJAVU_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(RENDER_DIR, { recursive: true });
+
+// Standard-Font (immer vorhanden auf Render)
+const FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
 // Multer: Uploads in /tmp
 const upload = multer({ dest: UPLOAD_DIR });
@@ -44,16 +43,6 @@ const escapeDrawtext = (t) =>
     .replace(/"/g, '\\"')    // "
     .replace(/\r?\n/g, "\\n");
 
-// Font wählen
-const getFontPath = () => {
-  if (fs.existsSync(MONTSERRAT_PATH)) {
-    console.log("[FONT] Using Montserrat:", MONTSERRAT_PATH);
-    return MONTSERRAT_PATH;
-  }
-  console.warn("[FONT] Montserrat not found, falling back to DejaVu");
-  return DEJAVU_PATH;
-};
-
 // -------------------- Routes --------------------
 
 // Healthcheck
@@ -65,8 +54,6 @@ app.get("/", (_req, res) => {
 // multipart/form-data:
 //  - video: Datei
 //  - text:  Overlay-Text
-// optional:
-//  - speed: Audio-Speed (z.B. 1.03)
 app.post("/render", upload.single("video"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No video file uploaded (field 'video')." });
@@ -79,45 +66,34 @@ app.post("/render", upload.single("video"), (req, res) => {
   const rawText = req.body.text || "Link in Bio";
   const text = escapeDrawtext(rawText);
 
-  const fontPath = getFontPath();
-
-  const atempo = req.body.speed ? Number(req.body.speed) : 1.03;
-  const atempoSafe = isNaN(atempo) ? 1.03 : Math.min(Math.max(atempo, 0.5), 2.0);
-
   // Filterkette:
   // 1) 1080x1920 letterbox
-  // 2) leichter Farbboost + Schärfe
-  // 3) Text GENAU mittig (x & y)
-  const vfParts = [
+  // 2) Text GENAU mittig (x & y)
+  const vf = [
     "scale=1080:1920:force_original_aspect_ratio=decrease",
     "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
-    "eq=contrast=1.05:saturation=1.08:brightness=0.02",
-    "unsharp=lx=3:ly=3:la=0.8:cx=3:cy=3:ca=0.4",
-    `drawtext=fontfile=${fontPath}:` +
+    `drawtext=fontfile=${FONT_PATH}:` +
       `text='${text}':` +
       "fontcolor=white:" +
       "fontsize=54:" +
-      "line_spacing=8:" +
       "box=1:boxcolor=black@0.45:boxborderw=18:" +
       "x=(w-text_w)/2:" +   // horizontal mittig
       "y=(h-text_h)/2"      // vertikal mittig
-  ];
+  ].join(",");
 
   console.log("[FFMPEG] input:", inputPath);
   console.log("[FFMPEG] output:", outputPath);
   console.log("[FFMPEG] text:", rawText);
-  console.log("[FFMPEG] filters:", vfParts.join(","));
-  console.log("[FFMPEG] atempo:", atempoSafe);
+  console.log("[FFMPEG] filters:", vf);
 
   const command = ffmpeg(inputPath)
     .outputOptions([
-      "-vf", vfParts.join(","),                 // VIDEO-FILTER
+      "-vf", vf,
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "22",
       "-c:a", "aac",
       "-b:a", "128k",
-      "-af", `atempo=${atempoSafe.toFixed(2)}`, // AUDIO-FILTER
       "-r", "30",
       "-movflags", "+faststart"
     ])
