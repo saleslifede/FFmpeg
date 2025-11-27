@@ -19,7 +19,7 @@ const RENDER_DIR = "/tmp/renders";
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(RENDER_DIR, { recursive: true });
 
-// Standard-Font (immer vorhanden auf Render)
+// Standard-Font (immer auf Render vorhanden)
 const FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
 // Multer: Uploads in /tmp
