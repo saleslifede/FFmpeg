@@ -11,22 +11,19 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// -------------------- Pfade & Directories --------------------
+// -------------------- Pfade & Ordner --------------------
 
 const UPLOAD_DIR = "/tmp/uploads";
 const RENDER_DIR = "/tmp/renders";
 
-// Font-Ordner (falls du Montserrat reinlegst)
 const FONT_DIR = path.join(__dirname, "fonts");
 const MONTSERRAT_PATH = path.join(FONT_DIR, "Montserrat-Regular.ttf");
-
-// Fallback-Font (Linux Standard)
 const DEJAVU_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(RENDER_DIR, { recursive: true });
 
-// Multer: Uploads nach /tmp
+// Multer: Uploads in /tmp
 const upload = multer({ dest: UPLOAD_DIR });
 
 // ffmpeg-static verwenden
@@ -42,12 +39,12 @@ app.use(express.urlencoded({ extended: true }));
 const escapeDrawtext = (t) =>
   (t || "")
     .replace(/\\/g, "\\\\")   // Backslashes
-    .replace(/:/g, "\\:")    // Doppelpunkte
-    .replace(/'/g, "\\'")    // Single Quotes
-    .replace(/"/g, '\\"')    // Double Quotes
-    .replace(/\r?\n/g, "\\n"); // Zeilenumbrüche
+    .replace(/:/g, "\\:")    // :
+    .replace(/'/g, "\\'")    // '
+    .replace(/"/g, '\\"')    // "
+    .replace(/\r?\n/g, "\\n");
 
-// Font wählen (wenn du Montserrat nicht willst, leg ihn einfach nicht in /fonts)
+// Font wählen
 const getFontPath = () => {
   if (fs.existsSync(MONTSERRAT_PATH)) {
     console.log("[FONT] Using Montserrat:", MONTSERRAT_PATH);
@@ -65,11 +62,11 @@ app.get("/", (_req, res) => {
 });
 
 // POST /render
-// multipart/form-data
-//   - video: Datei
-//   - text:  Overlay-Text
+// multipart/form-data:
+//  - video: Datei
+//  - text:  Overlay-Text
 // optional:
-//   - speed: Audio-Geschwindigkeit (z.B. 1.03)
+//  - speed: Audio-Speed (z.B. 1.03)
 app.post("/render", upload.single("video"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No video file uploaded (field 'video')." });
@@ -84,15 +81,13 @@ app.post("/render", upload.single("video"), (req, res) => {
 
   const fontPath = getFontPath();
 
-  // leichtes Audio-Tempo (optional)
   const atempo = req.body.speed ? Number(req.body.speed) : 1.03;
   const atempoSafe = isNaN(atempo) ? 1.03 : Math.min(Math.max(atempo, 0.5), 2.0);
 
   // Filterkette:
-  // 1) Resize auf 1080x1920 (Seitenverhältnis beibehalten)
-  // 2) Padding auf 1080x1920 mit schwarzem Rand
-  // 3) leichter Farbboost & Schärfe
-  // 4) Text **mittig-mittig** mit Box
+  // 1) 1080x1920 letterbox
+  // 2) leichter Farbboost + Schärfe
+  // 3) Text GENAU mittig (x & y)
   const vfParts = [
     "scale=1080:1920:force_original_aspect_ratio=decrease",
     "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
@@ -104,8 +99,8 @@ app.post("/render", upload.single("video"), (req, res) => {
       "fontsize=54:" +
       "line_spacing=8:" +
       "box=1:boxcolor=black@0.45:boxborderw=18:" +
-      "x=(w-text_w)/2:" +      // horizontal exakt mittig
-      "y=(h-text_h)/2"         // <<< HIER: vertikal mittig statt unten
+      "x=(w-text_w)/2:" +   // horizontal mittig
+      "y=(h-text_h)/2"      // vertikal mittig
   ];
 
   console.log("[FFMPEG] input:", inputPath);
@@ -116,20 +111,19 @@ app.post("/render", upload.single("video"), (req, res) => {
 
   const command = ffmpeg(inputPath)
     .outputOptions([
-      "-vf", vfParts.join(","),             // unsere Filterkette
+      "-vf", vfParts.join(","),                 // VIDEO-FILTER
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "22",
       "-c:a", "aac",
       "-b:a", "128k",
-      "-af", `atempo=${atempoSafe.toFixed(2)}`,
+      "-af", `atempo=${atempoSafe.toFixed(2)}`, // AUDIO-FILTER
       "-r", "30",
       "-movflags", "+faststart"
     ])
     .on("end", () => {
       console.log("[FFMPEG] finished:", outputPath);
-      // Upload-Cleanup
-      fs.unlink(inputPath, () => {});
+      fs.unlink(inputPath, () => {}); // Upload löschen
       const url = `${req.protocol}://${req.get("host")}/renders/${fileName}`;
       res.json({
         success: true,
