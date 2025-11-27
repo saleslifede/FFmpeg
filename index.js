@@ -1,10 +1,52 @@
-// POST /render
-// Form-Data:
-//   video = Datei
-//   text  = Overlay-Text
+// index.js
+import express from "express";
+import multer from "multer";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// -------------------- Pfade & Directories --------------------
+
+const UPLOAD_DIR = "/tmp/uploads";
+const RENDER_DIR = "/tmp/renders";
+
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(RENDER_DIR, { recursive: true });
+
+// Multer: Uploads nach /tmp
+const upload = multer({ dest: UPLOAD_DIR });
+
+// ffmpeg-static verwenden
+ffmpeg.setFfmpegPath(ffmpegPath);
+
+const app = express();
+
+// Body-Parser
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// -------------------- Healthcheck --------------------
+
+app.get("/", (_req, res) => {
+  res.send("🔥 SalesLife FFmpeg ASS-Overlay server is running");
+});
+
+// -------------------- /render (ASS, Text mittig/mittig) --------------------
+//
+// multipart/form-data:
+//   - video: Datei
+//   - text : Overlay-Text
+//
 app.post("/render", upload.single("video"), (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: "No video file uploaded (field 'video')." });
+    return res
+      .status(400)
+      .json({ error: "No video file uploaded (field 'video')." });
   }
 
   const inputPath = req.file.path;
@@ -14,10 +56,10 @@ app.post("/render", upload.single("video"), (req, res) => {
 
   // Text für ASS cleanen (Backslashes, Klammern, neue Zeilen)
   const safeText = rawText
-    .replace(/\\/g, "\\\\")
-    .replace(/{/g, "\\{")
-    .replace(/}/g, "\\}")
-    .replace(/\r?\n/g, "\\N");
+    .replace(/\\/g, "\\\\")   // \
+    .replace(/{/g, "\\{")    // {
+    .replace(/}/g, "\\}")    // }
+    .replace(/\r?\n/g, "\\N"); // Zeilenumbrüche
 
   const assContent = `
 [Script Info]
@@ -59,6 +101,7 @@ Dialogue: 0,0:00:00.00,9:59:59.00,Caption,,0000,0000,0040,,{\\an5\\bord3\\shad0}
   const vfFilters = [
     "scale=1080:1920:force_original_aspect_ratio=decrease",
     "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
+    // DejaVu-Fonts sind auf Render i. d. R. vorhanden
     `subtitles=${assPath}:fontsdir=/usr/share/fonts/truetype/dejavu`
   ];
 
@@ -91,4 +134,14 @@ Dialogue: 0,0:00:00.00,9:59:59.00,Caption,,0000,0000,0040,,{\\an5\\bord3\\shad0}
       fs.unlink(assPath, () => {});
       res.status(500).json({ error: err.message });
     });
+});
+
+// fertige Videos ausliefern
+app.use("/renders", express.static(RENDER_DIR));
+
+// -------------------- Serverstart --------------------
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("🚀 FFmpeg ASS-overlay server listening on port " + PORT);
 });
