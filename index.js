@@ -7,132 +7,139 @@ import path from "path";
 
 const app = express();
 
-// Uploads landen in /tmp
+// Uploads in /tmp (schnell auf Render)
 const upload = multer({ dest: "/tmp/uploads/" });
 
-// ffmpeg-static nutzen
+// ffmpeg-static Binary setzen
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// Body Parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Render-Ordner
+// Output-Folder
 const RENDER_DIR = "/tmp/renders";
 fs.mkdirSync(RENDER_DIR, { recursive: true });
 
-// Helper → drawtext escapen
-const escapeDrawtext = (t) =>
-  (t || "")
-    .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"');
-
-// Standard-Font (Render safe)
+// Fallback-Font (DejaVu ist auf Render in der Regel vorhanden)
 const FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
-// Random Helper
-const rand = (min, max) => (Math.random() * (max - min) + min).toFixed(3);
+// ---------- Helper ----------
 
-// Zufalls-Positionen für Text
-const randomTextPosition = () => {
-  const choices = [
-    "y=h-(text_h*2.3)",              // unten
-    "y=(h-text_h)/2",                // mitte
-    "y=text_h*1.5"                   // oben
-  ];
-  return choices[Math.floor(Math.random() * choices.length)];
-};
+// Text für drawtext entschärfen
+function cleanOverlayText(raw) {
+  return (raw || "Link in Bio")
+    .replace(/\\/g, "\\\\")   // Backslash
+    .replace(/:/g, "\\:")     // : escapen
+    .replace(/'/g, "\\'")     // '
+    .replace(/"/g, '\\"')     // "
+    .trim();
+}
+
+// ---------- Routes ----------
 
 // Healthcheck
 app.get("/", (_req, res) => {
   res.send("🔥 SalesLife FFmpeg Engine is running");
 });
 
-// MAIN ENDPOINT
-app.post("/render", upload.single("video"), async (req, res) => {
+// Optional: Liste aller Filter checken
+// Aufruf: https://dein-host/debug/filters
+// Nur zu Debug-Zwecken benutzen!
+/*
+import { spawn } from "child_process";
+app.get("/debug/filters", (_req, res) => {
+  const p = spawn(ffmpegPath, ["-filters"]);
+  let out = "";
+  p.stdout.on("data", (d) => (out += d.toString()));
+  p.stderr.on("data", (d) => (out += d.toString()));
+  p.on("close", () => {
+    res.type("text/plain").send(out);
+  });
+});
+*/
+
+// Haupt-Endpoint: 1080x1920 + Text einbrennen
+app.post("/render", upload.single("video"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "No video uploaded" });
+      return res.status(400).json({ error: "No video file uploaded (field 'video')." });
     }
 
-    const input = req.file.path;
-    const rawText = req.body.text || "Link in Bio";
-    const text = escapeDrawtext(rawText);
+    const inputPath = req.file.path;
+    const text = cleanOverlayText(req.body.text);
 
-    const outputName = `out_${Date.now()}.mp4`;
-    const output = path.join(RENDER_DIR, outputName);
+    const fileName = `out_${Date.now()}.mp4`;
+    const outputPath = path.join(RENDER_DIR, fileName);
 
-    // RANDOM EFFECTS (Safe for Render CPU)
-    const jitter = rand(0.985, 1.015);     // Tempo Anti-Dupe
-    const zoom = rand(1.00, 1.03);        // slight zoom
-    const rotate = rand(-0.4, 0.4);       // slight rotate
-    const brightness = rand(0.90, 1.15);
-    const contrast = rand(0.9, 1.2);
+    console.log("[FFMPEG] input:", inputPath);
+    console.log("[FFMPEG] output:", outputPath);
+    console.log("[FFMPEG] text:", text);
 
-    // Zufällige Textposition
-    const textY = randomTextPosition();
-
-    // FULL FFMPEG FILTERKETTE
-    const vf = [
-      // Resize + pad
-      "scale=1080:1920:force_original_aspect_ratio=decrease",
-      "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
-
-      // Blur edge falloff
-      "boxblur=5:1",
-
-      // minimaler anti-duplicate zoom
-      `zoompan=z='${zoom}':d=1`,
-
-      // Rotation +-0.4°
-      `rotate=${rotate}*PI/180:ow=rotw(360):oh=roth(360):c=black`,
-
-      // leichte Farbkorrektur
-      `eq=brightness=${brightness}:contrast=${contrast}`,
-
-      // TEXT OVERLAY
-      `drawtext=fontfile=${FONT_PATH}:text='${text}':fontcolor=white:fontsize=52:box=1:boxcolor=black@0.55:boxborderw=20:x=(w-text_w)/2:${textY}`
-    ].join(",");
-
-    console.log("Rendering video…");
-
-    ffmpeg(input)
+    const command = ffmpeg(inputPath)
+      // 1) Filter-Kette über videoFilters (kein -vf String)
+      .videoFilters([
+        "scale=1080:1920:force_original_aspect_ratio=decrease",
+        "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
+        {
+          filter: "drawtext",
+          options: {
+            fontfile: FONT_PATH,
+            text,                     // bereits gesäubert
+            fontcolor: "white",
+            fontsize: 48,
+            box: 1,
+            boxcolor: "black@0.45",
+            boxborderw: 18,
+            x: "(w-text_w)/2",
+            y: "h-(text_h*2.2)",
+          },
+        },
+      ])
       .outputOptions([
-        "-vf", vf,
+        "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "22",
-        "-c:v", "libx264",
         "-c:a", "aac",
         "-b:a", "128k",
-        "-ar", "44100",
-        `-filter:a atempo=${jitter}` // anti-duplicate
+        "-r", "30",
       ])
+      .on("start", (cmdLine) => {
+        console.log("[FFMPEG] start:", cmdLine);
+      })
       .on("end", () => {
-        fs.unlink(input, () => {});
-        const url = `${req.protocol}://${req.get("host")}/renders/${outputName}`;
+        console.log("[FFMPEG] finished:", outputPath);
+        // Upload-Datei aufräumen
+        fs.unlink(inputPath, () => {});
+        const url = `${req.protocol}://${req.get("host")}/renders/${fileName}`;
         res.json({
           success: true,
           url,
-          effects: { jitter, zoom, rotate, brightness, contrast }
+          width: 1080,
+          height: 1920,
         });
       })
-      .on("error", (err) => {
-        console.error("FFmpeg ERROR:", err.message);
-        fs.unlink(input, () => {});
-        res.status(500).json({ error: err.message });
+      .on("error", (err, stdout, stderr) => {
+        console.error("[FFMPEG] ERROR:", err.message);
+        if (stdout) console.error("[FFMPEG] stdout:", stdout);
+        if (stderr) console.error("[FFMPEG] stderr:", stderr);
+        fs.unlink(inputPath, () => {});
+        res.status(500).json({
+          error: err.message,
+        });
       })
-      .save(output);
+      .save(outputPath);
 
-  } catch (err) {
-    console.error("SERVER ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    console.error("[SERVER] fatal error:", e);
+    return res.status(500).json({ error: e.message || "Internal server error" });
   }
 });
 
-// Renders ausliefern
+// fertige Videos ausliefern
 app.use("/renders", express.static(RENDER_DIR));
 
-app.listen(process.env.PORT || 3000, () =>
-  console.log("🔥 FFmpeg Engine läuft auf Port " + (process.env.PORT || 3000))
-);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 SalesLife FFmpeg Engine listening on port ${PORT}`);
+});
