@@ -16,64 +16,48 @@ const app = express();
 const UPLOAD_DIR = "/tmp/uploads";
 const RENDER_DIR = "/tmp/renders";
 
-// hier liegt Montserrat nach dem postinstall-Script
 const FONT_DIR = path.join(__dirname, "fonts");
 const MONTSERRAT_PATH = path.join(FONT_DIR, "Montserrat-Regular.ttf");
 
-// Fallback-Font (Render/Linux Standard)
 const DEJAVU_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
-// Ordner sicherstellen
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(RENDER_DIR, { recursive: true });
 
-// Multer: Uploads nach /tmp
+// Multer Uploads
 const upload = multer({ dest: UPLOAD_DIR });
 
-// ffmpeg-static verwenden
+// ffmpeg
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-// Body-Parser
+// Body Parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // -------------------- Helper --------------------
 
-// Text für drawtext escapen (sonst knallt ffmpeg bei \ : ' " und Zeilenumbrüchen)
 const escapeDrawtext = (t) =>
   (t || "")
-    .replace(/\\/g, "\\\\")   // Backslashes
-    .replace(/:/g, "\\:")    // Doppelpunkte
-    .replace(/'/g, "\\'")    // Single Quotes
-    .replace(/"/g, '\\"')    // Double Quotes
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
     .replace(/\r?\n/g, "\\n");
 
-// Aktuellen Font wählen (Montserrat wenn vorhanden, sonst DejaVu)
 const getFontPath = () => {
-  if (fs.existsSync(MONTSERRAT_PATH)) {
-    console.log("[FONT] Using Montserrat:", MONTSERRAT_PATH);
-    return MONTSERRAT_PATH;
-  }
-  console.warn("[FONT] Montserrat not found, falling back to DejaVu");
+  if (fs.existsSync(MONTSERRAT_PATH)) return MONTSERRAT_PATH;
   return DEJAVU_PATH;
 };
 
 // -------------------- Routes --------------------
 
-// Healthcheck
 app.get("/", (_req, res) => {
   res.send("🔥 SalesLife FFmpeg Engine is running");
 });
 
-// POST /render
-// multipart/form-data
-//   - video: Datei
-//   - text:  Overlay-Text
-// optional:
-//   - speed: Audio-Geschwindigkeit (z.B. 1.03)
 app.post("/render", upload.single("video"), (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: "No video file uploaded (field 'video')." });
+    return res.status(400).json({ error: "No video file uploaded." });
   }
 
   const inputPath = req.file.path;
@@ -84,36 +68,34 @@ app.post("/render", upload.single("video"), (req, res) => {
   const text = escapeDrawtext(rawText);
 
   const fontPath = getFontPath();
-
-  // leichtes Audio-Tempo (optional)
   const atempo = req.body.speed ? Number(req.body.speed) : 1.03;
   const atempoSafe = isNaN(atempo) ? 1.03 : Math.min(Math.max(atempo, 0.5), 2.0);
 
-  // Filterkette:
-  // 1) Resize auf 1080x1920 (Seitenverhältnis beibehalten)
-  // 2) Padding auf 1080x1920 mit schwarzem Rand
-  // 3) leichter Farbboost & Schärfe
-  // 4) Text exakt in die Mitte (horizontal + vertikal)
+  // FADES für den Text
+  // Einblenden: 0 → 0.6s
+  // Ausblenden: letzte 0.6s
+  const fadeFilter =
+    "fade=t=in:st=0:d=0.6,fade=t=out:st=main_dur-0.6:d=0.6";
+
   const vfParts = [
     "scale=1080:1920:force_original_aspect_ratio=decrease",
     "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
     "eq=contrast=1.05:saturation=1.08:brightness=0.02",
     "unsharp=lx=3:ly=3:la=0.8:cx=3:cy=3:ca=0.4",
+    // Mittiger Text + Fade
     `drawtext=fontfile=${fontPath}:` +
-      `text='${text}':` +
-      "fontcolor=white:" +
-      "fontsize=54:" +
-      "line_spacing=8:" +
-      "box=1:boxcolor=black@0.45:boxborderw=18:" +
-      "x=(w-text_w)/2:" +              // horizontal exakt mittig
-      "y=(h-text_h-line_h)/2"          // vertikal zentriert (auch bei mehreren Zeilen)
+    `text='${text}':` +
+    "fontcolor=white:" +
+    "fontsize=54:" +
+    "line_spacing=8:" +
+    "box=1:boxcolor=black@0.45:boxborderw=18:" +
+    "x=(w-text_w)/2:" +
+    "y=(h-text_h)/2:" +
+    fadeFilter
   ];
 
-  console.log("[FFMPEG] input:", inputPath);
-  console.log("[FFMPEG] output:", outputPath);
-  console.log("[FFMPEG] text:", rawText);
-  console.log("[FFMPEG] filters:", vfParts.join(","));
-  console.log("[FFMPEG] atempo:", atempoSafe);
+  console.log("[FFMPEG] Rendering...");
+  console.log("[Filters]:", vfParts.join(","));
 
   ffmpeg(inputPath)
     .outputOptions([
@@ -128,8 +110,6 @@ app.post("/render", upload.single("video"), (req, res) => {
       "-movflags", "+faststart"
     ])
     .on("end", () => {
-      console.log("[FFMPEG] finished:", outputPath);
-      // Upload-Cleanup
       fs.unlink(inputPath, () => {});
       const url = `${req.protocol}://${req.get("host")}/renders/${fileName}`;
       res.json({
@@ -141,17 +121,15 @@ app.post("/render", upload.single("video"), (req, res) => {
       });
     })
     .on("error", (err) => {
-      console.error("[FFMPEG] ERROR:", err.message);
+      console.error("[FFMPEG ERROR]:", err.message);
       fs.unlink(inputPath, () => {});
       res.status(500).json({ error: err.message });
     })
     .save(outputPath);
 });
 
-// fertige Videos ausliefern
 app.use("/renders", express.static(RENDER_DIR));
 
-// Serverstart
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 FFmpeg text-overlay server listening on port " + PORT);
