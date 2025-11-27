@@ -1,128 +1,94 @@
-import express from "express";
-import multer from "multer";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegPath from "ffmpeg-static";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-
-// -------------------- Pfade & Ordner --------------------
-
-const UPLOAD_DIR = "/tmp/uploads";
-const RENDER_DIR = "/tmp/renders";
-
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-fs.mkdirSync(RENDER_DIR, { recursive: true });
-
-// Standard-Font (immer auf Render vorhanden)
-const FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-
-// Multer: Uploads in /tmp
-const upload = multer({ dest: UPLOAD_DIR });
-
-// ffmpeg-static verwenden
-ffmpeg.setFfmpegPath(ffmpegPath);
-
-// Body-Parser
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// -------------------- Helper --------------------
-
-// Text für drawtext escapen
-const escapeDrawtext = (t) =>
-  (t || "")
-    .replace(/\\/g, "\\\\")   // Backslashes
-    .replace(/:/g, "\\:")    // :
-    .replace(/'/g, "\\'")    // '
-    .replace(/"/g, '\\"')    // "
-    .replace(/\r?\n/g, "\\n");
-
-// -------------------- Routes --------------------
-
-// Healthcheck
-app.get("/", (_req, res) => {
-  res.send("🔥 SalesLife FFmpeg Engine is running");
-});
-
 // POST /render
-// multipart/form-data:
-//  - video: Datei
-//  - text:  Overlay-Text
+// Form-Data:
+//   video = Datei
+//   text  = Overlay-Text
 app.post("/render", upload.single("video"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No video file uploaded (field 'video')." });
   }
 
   const inputPath = req.file.path;
-  const fileName = `out_${Date.now()}.mp4`;
+  const rawText = (req.body.text || "Link in Bio").trim();
+
+  // ---------- 1) ASS-Datei bauen ----------
+
+  // Text für ASS cleanen (Backslashes, Klammern, neue Zeilen)
+  const safeText = rawText
+    .replace(/\\/g, "\\\\")
+    .replace(/{/g, "\\{")
+    .replace(/}/g, "\\}")
+    .replace(/\r?\n/g, "\\N");
+
+  const assContent = `
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+; Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,
+; Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle,
+; BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,DejaVu Sans,48,&H00FFFFFF,&H000000FF,&H7F000000,&H7F000000,
+-1,0,0,0,100,100,0,0,1,3,0,5,40,40,40,1
+
+[Events]
+; Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,9:59:59.00,Caption,,0000,0000,0040,,{\\an5\\bord3\\shad0}${safeText}
+`.trim() + "\n";
+
+  const stamp = Date.now();
+  const assPath = `/tmp/ov_${stamp}.ass`;
+
+  fs.writeFileSync(assPath, assContent, "utf8");
+
+  // ---------- 2) Output-Datei vorbereiten ----------
+
+  const fileName = `out_${stamp}.mp4`;
   const outputPath = path.join(RENDER_DIR, fileName);
 
-  const rawText = req.body.text || "Link in Bio";
-  const text = escapeDrawtext(rawText);
+  console.log("[FFMPEG] input:", inputPath);
+  console.log("[FFMPEG] ass  :", assPath);
+  console.log("[FFMPEG] out  :", outputPath);
+  console.log("[FFMPEG] text :", rawText);
 
-  // Filterkette:
-  // 1) 1080x1920 letterbox
-  // 2) Text GENAU mittig (x & y)
-  const vf = [
+  // Filterkette: scale → pad → subtitles(ASS)
+  const vfFilters = [
     "scale=1080:1920:force_original_aspect_ratio=decrease",
     "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
-    `drawtext=fontfile=${FONT_PATH}:` +
-      `text='${text}':` +
-      "fontcolor=white:" +
-      "fontsize=54:" +
-      "box=1:boxcolor=black@0.45:boxborderw=18:" +
-      "x=(w-text_w)/2:" +   // horizontal mittig
-      "y=(h-text_h)/2"      // vertikal mittig
-  ].join(",");
+    `subtitles=${assPath}:fontsdir=/usr/share/fonts/truetype/dejavu`
+  ];
 
-  console.log("[FFMPEG] input:", inputPath);
-  console.log("[FFMPEG] output:", outputPath);
-  console.log("[FFMPEG] text:", rawText);
-  console.log("[FFMPEG] filters:", vf);
-
-  const command = ffmpeg(inputPath)
+  ffmpeg(inputPath)
+    .videoFilters(vfFilters)
     .outputOptions([
-      "-vf", vf,
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "22",
       "-c:a", "aac",
       "-b:a", "128k",
-      "-r", "30",
-      "-movflags", "+faststart"
+      "-r", "30"
     ])
+    .on("start", (cmdLine) => {
+      console.log("[FFMPEG] start:", cmdLine);
+    })
     .on("end", () => {
       console.log("[FFMPEG] finished:", outputPath);
-      fs.unlink(inputPath, () => {}); // Upload löschen
-      const url = `${req.protocol}://${req.get("host")}/renders/${fileName}`;
-      res.json({
-        success: true,
-        url,
-        width: 1080,
-        height: 1920,
-        text: rawText
-      });
-    })
-    .on("error", (err) => {
-      console.error("[FFMPEG] ERROR:", err.message);
+      // Aufräumen
       fs.unlink(inputPath, () => {});
+      fs.unlink(assPath, () => {});
+      const url = `${req.protocol}://${req.get("host")}/renders/${fileName}`;
+      res.json({ success: true, url, width: 1080, height: 1920 });
+    })
+    .on("error", (err, stdout, stderr) => {
+      console.error("[FFMPEG] ERROR:", err.message);
+      if (stdout) console.error("[FFMPEG] stdout:", stdout);
+      if (stderr) console.error("[FFMPEG] stderr:", stderr);
+      fs.unlink(inputPath, () => {});
+      fs.unlink(assPath, () => {});
       res.status(500).json({ error: err.message });
     });
-
-  command.save(outputPath);
-});
-
-// fertige Videos ausliefern
-app.use("/renders", express.static(RENDER_DIR));
-
-// Serverstart
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("🚀 FFmpeg text-overlay server listening on port " + PORT);
 });
