@@ -57,8 +57,8 @@ app.post("/render", upload.single("video"), (req, res) => {
   // Text für ASS cleanen (Backslashes, Klammern, neue Zeilen)
   const safeText = rawText
     .replace(/\\/g, "\\\\")   // \
-    .replace(/{/g, "\\{")    // {
-    .replace(/}/g, "\\}")    // }
+    .replace(/{/g, "\\{")     // {
+    .replace(/}/g, "\\}")     // }
     .replace(/\r?\n/g, "\\N"); // Zeilenumbrüche
 
   const assContent = `
@@ -105,7 +105,7 @@ Dialogue: 0,0:00:00.00,9:59:59.00,Caption,,0000,0000,0040,,{\\an5\\bord3\\shad0}
     `subtitles=${assPath}:fontsdir=/usr/share/fonts/truetype/dejavu`
   ];
 
-  ffmpeg(inputPath)
+  const command = ffmpeg(inputPath)
     .videoFilters(vfFilters)
     .outputOptions([
       "-c:v", "libx264",
@@ -134,6 +134,9 @@ Dialogue: 0,0:00:00.00,9:59:59.00,Caption,,0000,0000,0040,,{\\an5\\bord3\\shad0}
       fs.unlink(assPath, () => {});
       res.status(500).json({ error: err.message });
     });
+
+  // *** WICHTIG: ffmpeg wirklich starten ***
+  command.save(outputPath);
 });
 
 // fertige Videos ausliefern
